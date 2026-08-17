@@ -24,12 +24,12 @@ from agent import run_agent
 
 questions = [
     "What is financial inclusion?",
-    "What are the strategic objectives of financial inclusion in India?",
     "What is 125 multiplied by 48?",
-    "What is 15% of 800?",
+    "Which product has the highest revenue?",
+    "What is the total revenue?",
+    "Which category generated the most revenue?",
     "What is the capital of France?"
 ]
-
 
 for question in questions:
 
@@ -41,3 +41,5 @@ for question in questions:
 
     print("\nANSWER:")
     print(answer)
+
+   

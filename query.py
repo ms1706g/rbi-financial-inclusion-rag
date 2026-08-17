@@ -1,14 +1,41 @@
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
+# =========================================================
+# query.py
+# RBI FINANCIAL INCLUSION RAG
+# =========================================================
+
 import os
+
 import ollama
 from groq import Groq
+from functools import lru_cache
 
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
 
 CHROMA_PATH = "chroma_db"
 
+EMBEDDING_MODEL = (
+    "sentence-transformers/all-MiniLM-L6-v2"
+)
 
+GROQ_MODEL = "openai/gpt-oss-20b"
+
+OLLAMA_MODEL = "phi3:mini"
+
+
+# =========================================================
+# GET VECTORSTORE
+# =========================================================
+
+@lru_cache(maxsize=1)
 def get_vectorstore():
+
+    print("[RAG] Loading embedding model and vector store...")
 
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -22,7 +49,19 @@ def get_vectorstore():
     return vectorstore
 
 
-def ask_question(question, k=4):
+# =========================================================
+# RETRIEVE CONTEXT
+# =========================================================
+
+def retrieve_context(question: str, k: int = 4):
+    """
+    Retrieve the most relevant chunks from the
+    RBI Financial Inclusion document.
+
+    Returns:
+        context: Combined text from retrieved chunks
+        results: Original Chroma documents
+    """
 
     vectorstore = get_vectorstore()
 
@@ -31,97 +70,445 @@ def ask_question(question, k=4):
         k=k
     )
 
+    # -----------------------------------------------------
+    # No results
+    # -----------------------------------------------------
+
+    if not results:
+        return "", []
+
+    # -----------------------------------------------------
+    # Combine retrieved documents
+    # -----------------------------------------------------
+
     context = "\n\n".join(
         result.page_content
         for result in results
     )
 
+    return context, results
+
+
+# =========================================================
+# BUILD PROMPT
+# =========================================================
+
+def build_prompt(question: str, context: str) -> str:
+    """
+    Build a document-grounded prompt.
+    """
+
     prompt = f"""
 You are a document question-answering assistant.
 
-Answer the user's question using ONLY the provided context.
+You must answer the user's question using ONLY the
+provided context from the RBI Financial Inclusion document.
 
-Rules:
-1. Do not use outside knowledge.
-2. If the answer cannot be found in the context, say:
-"I don't know based on the provided document."
-3. Keep the answer concise and factual.
+IMPORTANT RULES:
 
-Context:
+1. Use ONLY the provided context.
+
+2. Do NOT use outside knowledge.
+
+3. Do NOT use your own knowledge about RBI, India,
+   economics, finance, banking, or current events.
+
+4. Do NOT invent facts.
+
+5. Do NOT assume information that is not explicitly
+   supported by the context.
+
+6. If the answer cannot be found in the context,
+   respond exactly:
+
+I don't know based on the provided document.
+
+7. Keep the answer concise and factual.
+
+8. If the context contains conflicting information,
+   mention the conflict instead of guessing.
+
+9. Answer the user's exact question.
+
+---------------------------------------------------------
+CONTEXT
+---------------------------------------------------------
+
 {context}
 
-Question:
+---------------------------------------------------------
+QUESTION
+---------------------------------------------------------
+
 {question}
 
-Answer:
+---------------------------------------------------------
+ANSWER
+---------------------------------------------------------
 """
+
+    return prompt
+
+
+# =========================================================
+# GENERATE ANSWER WITH GROQ
+# =========================================================
+
+def generate_with_groq(prompt: str) -> str:
+    """
+    Generate an answer using Groq.
+    """
+
+    groq_api_key = os.getenv("GROQ_API_KEY")
+
+    if not groq_api_key:
+        raise ValueError(
+            "GROQ_API_KEY is not set."
+        )
+
+    client = Groq(
+        api_key=groq_api_key
+    )
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        temperature=0,
+        max_tokens=500
+    )
+
+    return (
+        response.choices[0]
+        .message
+        .content
+        .strip()
+    )
+
+
+# =========================================================
+# GENERATE ANSWER WITH OLLAMA
+# =========================================================
+
+def generate_with_ollama(prompt: str) -> str:
+    """
+    Generate an answer using local Ollama.
+    """
+
+    response = ollama.generate(
+        model=OLLAMA_MODEL,
+        prompt=prompt
+    )
+
+    return response["response"].strip()
+
+
+# =========================================================
+# GENERATE ANSWER
+# =========================================================
+
+def generate_answer(prompt: str) -> str:
+    """
+    Generate answer using Groq if GROQ_API_KEY exists.
+
+    Otherwise fall back to Ollama.
+    """
+
+    groq_api_key = os.getenv(
+        "GROQ_API_KEY"
+    )
 
     try:
 
-        groq_api_key = os.getenv("GROQ_API_KEY")
+        # -------------------------------------------------
+        # Prefer Groq
+        # -------------------------------------------------
 
         if groq_api_key:
 
-            client = Groq(
-                api_key=groq_api_key
+            return generate_with_groq(
+                prompt
             )
 
-            response = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.1,
-                max_tokens=500
-            )
+        # -------------------------------------------------
+        # Fallback to Ollama
+        # -------------------------------------------------
 
-            answer = response.choices[0].message.content
+        return generate_with_ollama(
+            prompt
+        )
 
-        else:
+    except Exception as e:
 
-            response = ollama.generate(
-                model="phi3:mini",
-                prompt=prompt
-            )
+        print(
+            "\n[RAG] LLM generation error:",
+            str(e)
+        )
 
-            answer = response["response"]
-
-    except Exception:
-
-        answer = (
+        return (
             "Unable to generate an answer. "
             "Please check the LLM configuration."
         )
 
-        return answer, []
+
+# =========================================================
+# EXTRACT SOURCES
+# =========================================================
+
+def extract_sources(results):
+    """
+    Extract unique source document and page information
+    from Chroma results.
+    """
 
     sources = []
+
     seen_sources = set()
 
     for result in results:
 
-        source = result.metadata.get(
+        metadata = result.metadata or {}
+
+        # -------------------------------------------------
+        # Source
+        # -------------------------------------------------
+
+        source = metadata.get(
             "source",
             "Unknown source"
         )
 
-        page = result.metadata.get("page")
+        # -------------------------------------------------
+        # Page
+        # -------------------------------------------------
 
-        if page is not None:
-            page += 1
+        page = metadata.get(
+            "page"
+        )
 
-        source_key = (source, page)
+        # -------------------------------------------------
+        # Chroma/PDF page numbering
+        #
+        # If your metadata starts at 0, convert to 1-based.
+        # -------------------------------------------------
 
-        if source_key not in seen_sources:
+        if isinstance(page, int):
 
-            sources.append({
+            page = page + 1
+
+        # -------------------------------------------------
+        # Unique source key
+        # -------------------------------------------------
+
+        source_key = (
+            source,
+            page
+        )
+
+        if source_key in seen_sources:
+            continue
+
+        sources.append(
+            {
                 "source": source,
                 "page": page
-            })
+            }
+        )
 
-            seen_sources.add(source_key)
+        seen_sources.add(
+            source_key
+        )
 
-    return answer, sources
+    return sources
+
+
+# =========================================================
+# ASK QUESTION
+# =========================================================
+
+def ask_question(question: str, k: int = 4):
+    """
+    Main RAG function.
+
+    Flow:
+
+        Question
+            ↓
+        Chroma similarity search
+            ↓
+        Relevant document chunks
+            ↓
+        Context
+            ↓
+        LLM
+            ↓
+        Answer + Sources
+
+    Returns:
+
+        answer, sources
+    """
+
+    # -----------------------------------------------------
+    # Validate question
+    # -----------------------------------------------------
+
+    question = question.strip()
+
+    if not question:
+
+        return (
+            "I don't know based on the provided document.",
+            []
+        )
+
+    try:
+
+        # =================================================
+        # RETRIEVE DOCUMENTS
+        # =================================================
+
+        context, results = retrieve_context(
+            question,
+            k=k
+        )
+
+        # -------------------------------------------------
+        # No relevant documents
+        # -------------------------------------------------
+
+        if not results or not context.strip():
+
+            return (
+                "I don't know based on the provided document.",
+                []
+            )
+
+        # =================================================
+        # BUILD PROMPT
+        # =================================================
+
+        prompt = build_prompt(
+            question,
+            context
+        )
+
+        # =================================================
+        # GENERATE ANSWER
+        # =================================================
+
+        answer = generate_answer(
+            prompt
+        )
+
+        # =================================================
+        # EXTRACT SOURCES
+        # =================================================
+
+        sources = extract_sources(
+            results
+        )
+
+        # =================================================
+        # RETURN
+        # =================================================
+
+        return answer, sources
+
+    except Exception as e:
+
+        print(
+            "\n[RAG] Error:",
+            str(e)
+        )
+
+        return (
+            "Unable to search the RBI document. "
+            f"Error: {str(e)}",
+            []
+        )
+
+# =========================================================
+# TEST RAG DIRECTLY
+# =========================================================
+
+if __name__ == "__main__":
+
+    print("=" * 70)
+    print("RBI FINANCIAL INCLUSION RAG")
+    print("=" * 70)
+
+    while True:
+
+        question = input(
+            "\nQuestion: "
+        ).strip()
+
+        if question.lower() in {
+            "exit",
+            "quit"
+        }:
+
+            print(
+                "\nGoodbye!"
+            )
+
+            break
+
+        if not question:
+            continue
+
+        # -------------------------------------------------
+        # Ask question
+        # -------------------------------------------------
+
+        answer, sources = ask_question(
+            question
+        )
+
+        # -------------------------------------------------
+        # Print answer
+        # -------------------------------------------------
+
+        print(
+            "\n" + "-" * 70
+        )
+
+        print(
+            "Answer:"
+        )
+
+        print(
+            answer
+        )
+
+        # -------------------------------------------------
+        # Print sources
+        # -------------------------------------------------
+
+        print(
+            "\nSources:"
+        )
+
+        if sources:
+
+            for source in sources:
+
+                print(
+                    f"- {source['source']} | "
+                    f"Page {source['page']}"
+                )
+
+        else:
+
+            print(
+                "- No sources found"
+            )
+
+        print(
+            "-" * 70
+        )
