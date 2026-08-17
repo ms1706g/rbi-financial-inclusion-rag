@@ -1,15 +1,9 @@
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-import ollama
-
 import os
-from groq import Groq
 import ollama
+from groq import Groq
 
-if os.getenv("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"):
-    # Render → Groq
-else:
-    # Local → Ollama
 
 CHROMA_PATH = "chroma_db"
 
@@ -32,19 +26,16 @@ def ask_question(question, k=4):
 
     vectorstore = get_vectorstore()
 
-    # Retrieve relevant chunks
     results = vectorstore.similarity_search(
         question,
         k=k
     )
 
-    # Build context
     context = "\n\n".join(
         result.page_content
         for result in results
     )
 
-    # Prompt
     prompt = f"""
 You are a document question-answering assistant.
 
@@ -65,26 +56,48 @@ Question:
 Answer:
 """
 
-    # Generate answer
     try:
-        response = ollama.generate(
-            model="phi3:mini",
-            prompt=prompt
-        )
 
-        answer = response["response"]
+        groq_api_key = os.getenv("GROQ_API_KEY")
 
-    except Exception as e:
+        if groq_api_key:
+
+            client = Groq(
+                api_key=groq_api_key
+            )
+
+            response = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=500
+            )
+
+            answer = response.choices[0].message.content
+
+        else:
+
+            response = ollama.generate(
+                model="phi3:mini",
+                prompt=prompt
+            )
+
+            answer = response["response"]
+
+    except Exception:
+
         answer = (
             "Unable to generate an answer. "
-            "Please make sure Ollama is running and the model is available."
+            "Please check the LLM configuration."
         )
 
-        sources = []
+        return answer, []
 
-        return answer, sources
-
-    # Sources
     sources = []
     seen_sources = set()
 
@@ -103,6 +116,7 @@ Answer:
         source_key = (source, page)
 
         if source_key not in seen_sources:
+
             sources.append({
                 "source": source,
                 "page": page
