@@ -2,6 +2,14 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 import ollama
 
+import os
+from groq import Groq
+import ollama
+
+if os.getenv("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"):
+    # Render → Groq
+else:
+    # Local → Ollama
 
 CHROMA_PATH = "chroma_db"
 
