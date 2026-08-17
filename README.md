@@ -120,12 +120,9 @@ This behavior was tested using an unrelated question about the capital of France
 ## Project Structure
 
 rag-project/
-|
 ├── data/
 │   └── RBI.pdf
-|
 ├── chroma_db/
-|
 ├── ingest.py
 ├── query.py
 ├── evaluation.py
